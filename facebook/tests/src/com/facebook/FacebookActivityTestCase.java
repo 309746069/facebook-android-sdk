@@ -1,21 +1,17 @@
 /**
- * Copyright (c) 2014-present, Facebook, Inc. All rights reserved.
+ * Copyright 2010-present Facebook.
  *
- * You are hereby granted a non-exclusive, worldwide, royalty-free license to use,
- * copy, modify, and distribute this software in source code or binary form for use
- * in connection with the web services and APIs provided by Facebook.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * As with any software that integrates with the Facebook platform, your use of
- * this software is subject to the Facebook Developer Principles and Policies
- * [http://developers.facebook.com/policy/]. This copyright notice shall be
- * included in all copies or substantial portions of the software.
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package com.facebook;
@@ -29,16 +25,14 @@ import android.os.ConditionVariable;
 import android.os.Handler;
 import android.test.ActivityInstrumentationTestCase2;
 import android.util.Log;
+import com.facebook.model.GraphObject;
 import com.facebook.internal.Utility;
 import junit.framework.AssertionFailedError;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.net.HttpURLConnection;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -51,8 +45,6 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
 
     private static String applicationId;
     private static String applicationSecret;
-    private static String clientToken;
-    private static TestUserManager testUserManager;
 
     public final static String SECOND_TEST_USER_TAG = "Second";
     public final static String THIRD_TEST_USER_TAG = "Third";
@@ -70,39 +62,56 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         super("", activityClass);
     }
 
-    protected String[] getDefaultPermissions() { return null; };
-
-    protected AccessToken getAccessTokenForSharedUser() {
-        return getAccessTokenForSharedUser(null);
+    // Returns an un-opened TestSession
+    protected TestSession getTestSessionWithSharedUser() {
+        return getTestSessionWithSharedUser(null);
     }
 
-    protected AccessToken getAccessTokenForSharedUser(String sessionUniqueUserTag) {
-        return getAccessTokenForSharedUserWithPermissions(sessionUniqueUserTag,
-                getDefaultPermissions());
+    // Returns an un-opened TestSession
+    protected TestSession getTestSessionWithSharedUser(String sessionUniqueUserTag) {
+        return getTestSessionWithSharedUserAndPermissions(sessionUniqueUserTag, new ArrayList<String>());
     }
 
-    protected AccessToken getAccessTokenForSharedUserWithPermissions(String sessionUniqueUserTag,
-        List<String> permissions) {
-        return getTestUserManager().getAccessTokenForSharedUser(permissions, sessionUniqueUserTag);
+    protected TestSession getTestSessionWithSharedUserAndPermissions(String sessionUniqueUserTag,
+            List<String> permissions) {
+        return TestSession.createSessionWithSharedUser(getActivity(), permissions, sessionUniqueUserTag);
     }
 
-    protected AccessToken getAccessTokenForSharedUserWithPermissions(String sessionUniqueUserTag,
-                                                                      String... permissions) {
+    // Returns an un-opened TestSession
+    protected TestSession getTestSessionWithPrivateUser(TestBlocker testBlocker) {
+        return TestSession.createSessionWithPrivateUser(getActivity(), null);
+    }
+
+    protected TestSession openTestSessionWithSharedUser(final TestBlocker blocker) {
+        return openTestSessionWithSharedUser(blocker, null);
+    }
+
+    protected TestSession openTestSessionWithSharedUser(final TestBlocker blocker, String sessionUniqueUserTag) {
+        TestSession session = getTestSessionWithSharedUser();
+        openSession(getActivity(), session, blocker);
+        return session;
+    }
+
+    protected TestSession openTestSessionWithSharedUser() {
+        return openTestSessionWithSharedUser((String) null);
+    }
+
+    protected TestSession openTestSessionWithSharedUser(String sessionUniqueUserTag) {
+        return openTestSessionWithSharedUserAndPermissions(sessionUniqueUserTag, (String[]) null);
+    }
+
+    protected TestSession openTestSessionWithSharedUserAndPermissions(String sessionUniqueUserTag,
+            String... permissions) {
         List<String> permissionList = (permissions != null) ? Arrays.asList(permissions) : null;
-        return getAccessTokenForSharedUserWithPermissions(sessionUniqueUserTag, permissionList);
+        return openTestSessionWithSharedUserAndPermissions(sessionUniqueUserTag, permissionList);
     }
 
-    protected TestUserManager getTestUserManager() {
-        if (testUserManager == null) {
-            synchronized (FacebookActivityTestCase.class) {
-                if (testUserManager == null) {
-                    readApplicationIdAndSecret();
-                    testUserManager = new TestUserManager(applicationSecret, applicationId);
-                }
-            }
-        }
-
-        return testUserManager;
+    protected TestSession openTestSessionWithSharedUserAndPermissions(String sessionUniqueUserTag,
+            List<String> permissions) {
+        final TestBlocker blocker = getTestBlocker();
+        TestSession session = getTestSessionWithSharedUserAndPermissions(sessionUniqueUserTag, permissions);
+        openSession(getActivity(), session, blocker);
+        return session;
     }
 
     // Turns exceptions from the TestBlocker into JUnit assertions
@@ -142,11 +151,11 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
 
     protected synchronized void readApplicationIdAndSecret() {
         synchronized (FacebookTestCase.class) {
-            if (applicationId != null && applicationSecret != null && clientToken != null) {
+            if (applicationId != null && applicationSecret != null) {
                 return;
             }
 
-            AssetManager assets = getInstrumentation().getTargetContext().getResources().getAssets();
+            AssetManager assets = getInstrumentation().getContext().getResources().getAssets();
             InputStream stream = null;
             final String errorMessage = "could not read applicationId and applicationSecret from config.json; ensure "
                     + "you have run 'configure_unit_tests.sh'. Error: ";
@@ -163,12 +172,13 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
 
                 applicationId = jsonObject.optString("applicationId");
                 applicationSecret = jsonObject.optString("applicationSecret");
-                clientToken = jsonObject.optString("clientToken");
 
-                if (Utility.isNullOrEmpty(applicationId) || Utility.isNullOrEmpty(applicationSecret) ||
-                        Utility.isNullOrEmpty(clientToken)) {
-                    fail(errorMessage + "config values are missing");
+                if (Utility.isNullOrEmpty(applicationId) || Utility.isNullOrEmpty(applicationSecret)) {
+                    fail(errorMessage + "one or both config values are missing");
                 }
+
+                TestSession.setTestApplicationId(applicationId);
+                TestSession.setTestApplicationSecret(applicationSecret);
             } catch (IOException e) {
                 fail(errorMessage + e.toString());
             } catch (JSONException e) {
@@ -185,38 +195,47 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         }
     }
 
-    protected static String getApplicationId() {
-        return applicationId;
+    protected void openSession(Activity activity, TestSession session) {
+        final TestBlocker blocker = getTestBlocker();
+        openSession(activity, session, blocker);
     }
 
-    protected static String getApplicationSecret() {
-        return applicationSecret;
+    protected void openSession(Activity activity, TestSession session, final TestBlocker blocker) {
+        Session.OpenRequest openRequest = new Session.OpenRequest(activity).
+                setCallback(new Session.StatusCallback() {
+                    boolean signaled = false;
+
+                    @Override
+                    public void call(Session session, SessionState state, Exception exception) {
+                        if (exception != null) {
+                            Log.w(TAG,
+                                    "openSession: received an error opening session: " + exception.toString());
+                        }
+                        assertTrue(exception == null);
+                        // Only signal once, or we might screw up the count on the blocker.
+                        if (!signaled) {
+                            blocker.signal();
+                            signaled = true;
+                        }
+                    }
+                });
+
+        session.openForRead(openRequest);
+        waitAndAssertSuccess(blocker, 1);
     }
 
     protected void setUp() throws Exception {
         super.setUp();
 
-        // Make sure the logging is turned on.
-        FacebookSdk.setIsDebugEnabled(true);
-
         // Make sure we have read application ID and secret.
         readApplicationIdAndSecret();
 
-        FacebookSdk.sdkInitialize(getInstrumentation().getTargetContext());
-        FacebookSdk.setApplicationId(applicationId);
-        FacebookSdk.setClientToken(clientToken);
-
         // These are useful for debugging unit test failures.
-        FacebookSdk.addLoggingBehavior(LoggingBehavior.REQUESTS);
-        FacebookSdk.addLoggingBehavior(LoggingBehavior.INCLUDE_ACCESS_TOKENS);
+        Settings.addLoggingBehavior(LoggingBehavior.REQUESTS);
+        Settings.addLoggingBehavior(LoggingBehavior.INCLUDE_ACCESS_TOKENS);
 
         // We want the UI thread to be in StrictMode to catch any violations.
-        // TODO: reenable this
-        // turnOnStrictModeForUiThread();
-
-        // Needed to bypass a dexmaker bug for mockito
-        System.setProperty("dexmaker.dexcache",
-                getInstrumentation().getTargetContext().getCacheDir().getPath());
+        turnOnStrictModeForUiThread();
     }
 
     protected void tearDown() throws Exception {
@@ -229,110 +248,97 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         }
     }
 
-    protected Bundle getNativeLinkingExtras(String token, String userId) {
-        readApplicationIdAndSecret();
-
+    protected Bundle getNativeLinkingExtras(String token) {
         Bundle extras = new Bundle();
         String extraLaunchUriString = String
                 .format("fbrpc://facebook/nativethirdparty?app_id=%s&package_name=com.facebook.sdk.tests&class_name=com.facebook.FacebookActivityTests$FacebookTestActivity&access_token=%s",
-                        applicationId, token);
+                        TestSession.getTestApplicationId(), token);
         extras.putString("extra_launch_uri", extraLaunchUriString);
         extras.putString("expires_in", "3600");
-        extras.putLong("app_id", Long.parseLong(applicationId));
+        extras.putLong("app_id", Long.parseLong(TestSession.getTestApplicationId()));
         extras.putString("access_token", token);
-        if(userId != null && !userId.isEmpty()) {
-            extras.putString("user_id", userId);
-        }
 
         return extras;
     }
 
-    protected JSONObject getAndAssert(AccessToken accessToken, String id) {
-        Bundle parameters = new Bundle();
-        parameters.putString("fields", "message");
+    interface GraphObjectPostResult extends GraphObject {
+        String getId();
+    }
 
-        GraphRequest request = new GraphRequest(accessToken, id, parameters, null);
-        GraphResponse response = request.executeAndWait();
+    protected GraphObject getAndAssert(Session session, String id) {
+        Request request = new Request(session, id);
+        Response response = request.executeAndWait();
         assertNotNull(response);
 
         assertNull(response.getError());
 
-        JSONObject result = response.getJSONObject();
+        GraphObject result = response.getGraphObject();
         assertNotNull(result);
 
         return result;
     }
 
-    protected JSONObject postGetAndAssert(AccessToken accessToken, String path,
-                                          JSONObject graphObject) {
-        GraphRequest request = GraphRequest.newPostRequest(accessToken, path, graphObject, null);
-        GraphResponse response = request.executeAndWait();
+    protected GraphObject postGetAndAssert(Session session, String path, GraphObject graphObject) {
+        Request request = Request.newPostRequest(session, path, graphObject, null);
+        Response response = request.executeAndWait();
         assertNotNull(response);
 
         assertNull(response.getError());
 
-        JSONObject result = response.getJSONObject();
+        GraphObjectPostResult result = response.getGraphObjectAs(GraphObjectPostResult.class);
         assertNotNull(result);
-        assertNotNull(result.optString("id"));
+        assertNotNull(result.getId());
 
-        return getAndAssert(accessToken, result.optString("id"));
+        return getAndAssert(session, result.getId());
     }
 
     protected void setBatchApplicationIdForTestApp() {
-        readApplicationIdAndSecret();
-        GraphRequest.setDefaultBatchApplicationId(applicationId);
+        String appId = TestSession.getTestApplicationId();
+        Request.setDefaultBatchApplicationId(appId);
     }
 
-    protected JSONObject batchCreateAndGet(AccessToken accessToken, String graphPath,
-                                           JSONObject graphObject, String fields) {
-        GraphRequest create = GraphRequest.newPostRequest(accessToken, graphPath, graphObject,
-                new ExpectSuccessCallback());
+    protected <U extends GraphObject> U batchCreateAndGet(Session session, String graphPath, GraphObject graphObject,
+            String fields, Class<U> resultClass) {
+        Request create = Request.newPostRequest(session, graphPath, graphObject, new ExpectSuccessCallback());
         create.setBatchEntryName("create");
-        GraphRequest get = GraphRequest.newGraphPathRequest(accessToken, "{result=create:$.id}",
-                new ExpectSuccessCallback());
+        Request get = Request.newGraphPathRequest(session, "{result=create:$.id}", new ExpectSuccessCallback());
         if (fields != null) {
             Bundle parameters = new Bundle();
             parameters.putString("fields", fields);
             get.setParameters(parameters);
         }
 
-        return batchPostAndGet(create, get);
+        return batchPostAndGet(create, get, resultClass);
     }
 
-    protected JSONObject batchUpdateAndGet(AccessToken accessToken, String graphPath,
-                                           JSONObject graphObject, String fields) {
-        GraphRequest update = GraphRequest.newPostRequest(accessToken, graphPath, graphObject,
-                new ExpectSuccessCallback());
-        GraphRequest get = GraphRequest.newGraphPathRequest(accessToken, graphPath,
-                new ExpectSuccessCallback());
+    protected <U extends GraphObject> U batchUpdateAndGet(Session session, String graphPath, GraphObject graphObject,
+            String fields, Class<U> resultClass) {
+        Request update = Request.newPostRequest(session, graphPath, graphObject, new ExpectSuccessCallback());
+        Request get = Request.newGraphPathRequest(session, graphPath, new ExpectSuccessCallback());
         if (fields != null) {
             Bundle parameters = new Bundle();
             parameters.putString("fields", fields);
             get.setParameters(parameters);
         }
 
-        return batchPostAndGet(update, get);
+        return batchPostAndGet(update, get, resultClass);
     }
 
-    protected JSONObject batchPostAndGet(GraphRequest post, GraphRequest get) {
-        List<GraphResponse> responses = GraphRequest.executeBatchAndWait(post, get);
+    protected <U extends GraphObject> U batchPostAndGet(Request post, Request get, Class<U> resultClass) {
+        List<Response> responses = Request.executeBatchAndWait(post, get);
         assertEquals(2, responses.size());
 
-        JSONObject resultGraphObject = responses.get(1).getJSONObject();
+        U resultGraphObject = responses.get(1).getGraphObjectAs(resultClass);
         assertNotNull(resultGraphObject);
         return resultGraphObject;
     }
 
-    protected JSONObject createStatusUpdate(String unique) {
-        JSONObject statusUpdate = new JSONObject();
+    protected GraphObject createStatusUpdate(String unique) {
+        GraphObject statusUpdate = GraphObject.Factory.create();
         String message = String.format(
                 "Check out my awesome new status update posted at: %s. Some chars for you: +\"[]:,%s", new Date(),
                 unique);
-        try {
-            statusUpdate.put("message", message);
-        } catch (JSONException e) {
-            throw new RuntimeException(e);
-        }
+        statusUpdate.setProperty("message", message);
         return statusUpdate;
     }
 
@@ -340,6 +346,20 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         Bitmap image = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565);
         image.eraseColor(Color.BLUE);
         return image;
+    }
+
+    protected void issueFriendRequest(TestSession session, String targetUserId) {
+        String graphPath = "me/friends/" + targetUserId;
+        Request request = Request.newPostRequest(session, graphPath, null, null);
+        Response response = request.executeAndWait();
+        // We will get a 400 error if the users are already friends.
+        FacebookRequestError error = response.getError();
+        assertTrue(error == null || error.getRequestStatusCode() == 400);
+    }
+
+    protected void makeTestUsersFriends(TestSession session1, TestSession session2) {
+        issueFriendRequest(session1, session2.getTestUserId());
+        issueFriendRequest(session2, session1.getTestUserId());
     }
 
     protected void assertDateEqualsWithinDelta(Date expected, Date actual, long deltaInMsec) {
@@ -352,9 +372,9 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         assertTrue(delta < deltaInMsec);
     }
 
-    protected void assertNoErrors(List<GraphResponse> responses) {
+    protected void assertNoErrors(List<Response> responses) {
         for (int i = 0; i < responses.size(); ++i) {
-            GraphResponse response = responses.get(i);
+            Response response = responses.get(i);
             assertNotNull(response);
             assertNull(response.getError());
         }
@@ -365,7 +385,7 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         FileOutputStream outStream = null;
 
         try {
-            AssetManager assets = getActivity().getResources().getAssets();
+            AssetManager assets = getInstrumentation().getContext().getResources().getAssets();
             inputStream = assets.open(assetPath);
 
             File outputDir = getActivity().getCacheDir(); // context being the Activity pointer
@@ -435,16 +455,17 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         }
     }
 
-    protected TestGraphRequestAsyncTask createAsyncTaskOnUiThread(final GraphRequest... requests) throws Throwable {
-        final ArrayList<TestGraphRequestAsyncTask> result = new ArrayList<TestGraphRequestAsyncTask>();
+    protected TestRequestAsyncTask createAsyncTaskOnUiThread(final Request... requests) throws Throwable {
+        final ArrayList<TestRequestAsyncTask> result = new ArrayList<TestRequestAsyncTask>();
         runTestOnUiThread(new Runnable() {
             @Override
             public void run() {
-                result.add(new TestGraphRequestAsyncTask(requests));
+                result.add(new TestRequestAsyncTask(requests));
             }
         });
         return result.isEmpty() ? null : result.get(0);
     }
+
 
     /*
      * Classes and helpers related to asynchronous requests.
@@ -452,30 +473,30 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
 
     // A subclass of RequestAsyncTask that knows how to interact with TestBlocker to ensure that tests can wait
     // on and assert success of async tasks.
-    protected class TestGraphRequestAsyncTask extends GraphRequestAsyncTask {
+    protected class TestRequestAsyncTask extends RequestAsyncTask {
         private final TestBlocker blocker = FacebookActivityTestCase.this.getTestBlocker();
 
-        public TestGraphRequestAsyncTask(GraphRequest... requests) {
+        public TestRequestAsyncTask(Request... requests) {
             super(requests);
         }
 
-        public TestGraphRequestAsyncTask(List<GraphRequest> requests) {
+        public TestRequestAsyncTask(List<Request> requests) {
             super(requests);
         }
 
-        public TestGraphRequestAsyncTask(GraphRequestBatch requests) {
+        public TestRequestAsyncTask(RequestBatch requests) {
             super(requests);
         }
 
-        public TestGraphRequestAsyncTask(HttpURLConnection connection, GraphRequest... requests) {
+        public TestRequestAsyncTask(HttpURLConnection connection, Request... requests) {
             super(connection, requests);
         }
 
-        public TestGraphRequestAsyncTask(HttpURLConnection connection, List<GraphRequest> requests) {
+        public TestRequestAsyncTask(HttpURLConnection connection, List<Request> requests) {
             super(connection, requests);
         }
 
-        public TestGraphRequestAsyncTask(HttpURLConnection connection, GraphRequestBatch requests) {
+        public TestRequestAsyncTask(HttpURLConnection connection, RequestBatch requests) {
             super(connection, requests);
         }
 
@@ -487,7 +508,7 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
             return getException();
         }
 
-        protected void onPostExecute(List<GraphResponse> result) {
+        protected void onPostExecute(List<Response> result) {
             try {
                 super.onPostExecute(result);
 
@@ -534,7 +555,7 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
 
     // Provides an implementation of Request.Callback that will assert either success (no error) or failure (error)
     // of a request, and allow derived classes to perform additional asserts.
-    protected class TestCallback implements GraphRequest.Callback {
+    protected class TestCallback implements Request.Callback {
         private final TestBlocker blocker;
         private final boolean expectSuccess;
 
@@ -548,7 +569,7 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         }
 
         @Override
-        public void onCompleted(GraphResponse response) {
+        public void onCompleted(Response response) {
             try {
                 // We expect to be called on the right thread.
                 if (Thread.currentThread() != blocker) {
@@ -573,7 +594,7 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
             }
         }
 
-        protected void performAsserts(GraphResponse response) {
+        protected void performAsserts(Response response) {
         }
     }
 
@@ -591,31 +612,31 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
         }
     }
 
-    public static abstract class MockGraphRequest extends GraphRequest {
-        public abstract GraphResponse createResponse();
+    public static abstract class MockRequest extends Request {
+        public abstract Response createResponse();
     }
 
-    public static class MockGraphRequestBatch extends GraphRequestBatch {
-        public MockGraphRequestBatch(MockGraphRequest... requests) {
+    public static class MockRequestBatch extends RequestBatch {
+        public MockRequestBatch(MockRequest... requests) {
             super(requests);
         }
 
         // Caller must ensure that all the requests in the batch are, in fact, MockRequests.
-        public MockGraphRequestBatch(GraphRequestBatch requests) {
+        public MockRequestBatch(RequestBatch requests) {
             super(requests);
         }
 
         @Override
-        List<GraphResponse> executeAndWaitImpl() {
-            List<GraphRequest> requests = getRequests();
+        List<Response> executeAndWaitImpl() {
+            List<Request> requests = getRequests();
 
-            List<GraphResponse> responses = new ArrayList<GraphResponse>();
-            for (GraphRequest request : requests) {
-                MockGraphRequest mockRequest = (MockGraphRequest) request;
+            List<Response> responses = new ArrayList<Response>();
+            for (Request request : requests) {
+                MockRequest mockRequest = (MockRequest) request;
                 responses.add(mockRequest.createResponse());
             }
 
-            GraphRequest.runCallbacks(this, responses);
+            Request.runCallbacks(this, responses);
 
             return responses;
         }
@@ -643,32 +664,22 @@ public class FacebookActivityTestCase<T extends Activity> extends ActivityInstru
     }
 
     protected void turnOnStrictModeForThisThread() {
-        // We use reflection, because Instrumentation will complain about any references to
-        // StrictMode in API versions < 9 when attempting to run the unit tests. No particular
-        // effort has been made to make this efficient, since we expect to call it just once.
+        // We use reflection, because Instrumentation will complain about any references to StrictMode in API versions < 9
+        // when attempting to run the unit tests. No particular effort has been made to make this efficient, since we
+        // expect to call it just once.
         try {
             ClassLoader loader = Thread.currentThread().getContextClassLoader();
             Class<?> strictModeClass = Class.forName("android.os.StrictMode", true, loader);
-            Class<?> threadPolicyClass = Class.forName(
-                    "android.os.StrictMode$ThreadPolicy",
-                    true,
-                    loader);
-            Class<?> threadPolicyBuilderClass = Class.forName(
-                    "android.os.StrictMode$ThreadPolicy$Builder",
-                    true,
+            Class<?> threadPolicyClass = Class.forName("android.os.StrictMode$ThreadPolicy", true, loader);
+            Class<?> threadPolicyBuilderClass = Class.forName("android.os.StrictMode$ThreadPolicy$Builder", true,
                     loader);
 
             Object threadPolicyBuilder = threadPolicyBuilderClass.getConstructor().newInstance();
-            threadPolicyBuilder = threadPolicyBuilderClass.getMethod("detectAll").invoke(
-                    threadPolicyBuilder);
-            threadPolicyBuilder = threadPolicyBuilderClass.getMethod("penaltyDeath").invoke(
-                    threadPolicyBuilder);
+            threadPolicyBuilder = threadPolicyBuilderClass.getMethod("detectAll").invoke(threadPolicyBuilder);
+            threadPolicyBuilder = threadPolicyBuilderClass.getMethod("penaltyDeath").invoke(threadPolicyBuilder);
 
-            Object threadPolicy = threadPolicyBuilderClass.getMethod("build").invoke(
-                    threadPolicyBuilder);
-            strictModeClass.getMethod("setThreadPolicy", threadPolicyClass).invoke(
-                    strictModeClass,
-                    threadPolicy);
+            Object threadPolicy = threadPolicyBuilderClass.getMethod("build").invoke(threadPolicyBuilder);
+            strictModeClass.getMethod("setThreadPolicy", threadPolicyClass).invoke(strictModeClass, threadPolicy);
         } catch (Exception ex) {
         }
     }
